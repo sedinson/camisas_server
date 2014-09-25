@@ -1,0 +1,155 @@
+<?php
+
+/*
+ * To change this template, choose Tools | Templates
+ * and open the template in the editor.
+ */
+
+/**
+ * Description of UserController
+ *
+ * @author edinson
+ */
+class UserController extends ControllerBase {
+	public function _Always() {
+        echo $this->config->get('pre');
+    }
+    
+    function login () {
+        echo $this->config->get('pre');
+        
+        if(!empty($this->post['user']) && !empty($this->post['password'])) {
+            $result = QueryFactory::query("
+                SELECT MD5(idusuario) AS token 
+                FROM usuario 
+                WHERE user = :user 
+                AND pass = MD5(:password);", array (
+                ':user' => $this->post['user'],
+                ':password' => $this->post['password']
+            ));
+            
+            if(count($result) == 1) {
+                $_SESSION['token'] = $result[0]['token'];
+                
+                echo HTTP::JSON(200);
+            } else {
+                echo HTTP::JSON(401);
+            }
+        } else {
+            echo HTTP::JSON(400);
+        }
+    }
+    
+    function logout () {
+        echo $this->config->get('pre');
+        
+        session_destroy();
+        
+        echo HTTP::JSON(200);
+    }
+    
+    function get () {
+    	if(isset ($_SESSION['token'])) {
+    		$user = QueryFactory::query("
+    			SELECT idusuario AS id, user, nombre, mail
+    			FROM usuario
+    			WHERE MD5(idusuario) = :token", array (
+    				':token' => $_SESSION['token']
+    			));
+    			
+			$result = Partial::arrayNames($user);
+            echo json_encode($result[0], JSON_PRETTY_PRINT);
+    	} else {
+    		echo HTTP::JSON(401);
+    	}
+    }
+    
+    function register () {
+        if(!empty ($this->post['user']) && !empty ($this->post['pass']) &&
+           !empty ($this->post['name']) && !empty ($this->post['mail'])) {
+            $usuario = $this->getModel('usuario');
+            
+            $usuario->insert(array (
+                ':user' => $this->post['user'],
+                ':pass' => md5($this->post['pass']),
+                ':nombre' => $this->post['name'],
+                ':mail' => $this->post['mail']
+            ));
+            
+            if($usuario->lastID() > 0) {
+                echo HTTP::JSON(200);
+            } else {
+                echo HTTP::JSON(424);
+            }
+        } else {
+            echo HTTP::JSON(400);
+        }
+    }
+    
+    /*oldpass, newpass*/
+    function changepassword () {
+        if(isset($_SESSION['token'])) {
+            if(!empty ($this->post['old']) && !empty ($this->post['new'])) {
+                $res = QueryFactory::query("
+                    SELECT 1 
+                    FROM usuario
+                    WHERE MD5(idusuario) = :token
+                    AND pass = :oldpass", array (
+                        ':token' => $_SESSION['token'],
+                        ':oldpass' => $this->post['old']
+                    ));
+                
+                if(count($res) == 1) {
+                    QueryFactory::executeOnly("
+                        UPDATE usuario
+                        SET pass = MD5(:newpass)
+                        WHERE MD5(idusuario) = :token", array (
+                            ':token' => $_SESSION['token'],
+                            ':newpass' => $this->post['new']
+                        ));
+                    
+                    echo HTTP::JSON(200);
+                } else {
+                    echo HTTP::JSON(403);
+                }
+            } else {
+                echo HTTP::JSON(400);
+            }
+        } else {
+            echo HTTP::JSON(401);
+        }
+    }
+    
+    function gcm () {
+        if(isset($_SESSION['token'])) {
+            if(!empty($this->get['id']) && !empty($this->post['reggcm'])) {
+                $imei = QueryFactory::query("
+                    SELECT imei
+                    FROM vehiculousuario vu, vehiculo v
+                    WHERE vu.idvehiculo = v.idvehiculo
+                    AND MD5(vu.idusuario) = :token
+                    AND vu.idvehiculo = :vehiculo;", array (
+                        ':vehiculo' => $this->get['id'],
+                        ':token' => $_SESSION['token']
+                    ));
+
+                if(count($imei) == 1) {
+                    $this->getModel('gcmuser')->insertorupdate(array (
+                            ':token' => $_SESSION['token'],
+                            ':imei' => $imei[0]['imei'],
+                            ':gcm' => $this->post['reggcm']
+                        ));
+                    
+                    echo HTTP::JSON(200);
+                } else {
+                    echo HTTP::JSON(403);
+                }
+            } else {
+                echo HTTP::JSON(400);
+            }
+        } else {
+            echo HTTP::JSON(401);
+        }
+    }
+}
+?>

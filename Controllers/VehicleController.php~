@@ -1,0 +1,485 @@
+<?php
+
+/*
+ * To change this template, choose Tools | Templates
+ * and open the template in the editor.
+ */
+
+/**
+ * Description of VehiculosController
+ *
+ * @author edinson
+ */
+class VehicleController extends ControllerBase {
+
+    public function _Always() {
+        if (!isset($_SESSION['token'])) {
+            HTTP::JSON(401);
+        }
+
+        if (in_array(ActionName, array(
+                    'update', 'update_configuration', 'configuration', 'delete', 'status', 'positions', 'track', 'messages', 'obd2'))) {
+            if (!empty($this->get['id'])) {
+                $vehicle = QueryFactory::query("
+                SELECT idvehiculo 
+                FROM token_vehiculousuario
+                WHERE idvehiculo = :vehiculo
+                AND (token = :token
+                OR token_owner = :token)
+                GROUP BY idvehiculo;", array(
+                    ':vehiculo' => $this->get['id'],
+                    ':token' => $_SESSION['token']
+                ));
+
+                if (count($vehicle) != 1) {
+                    HTTP::JSON(403);
+                }
+            }
+            
+            HTTP::JSON(400);
+        }
+    }
+
+    private function returnIfDate($date, $default) {
+        if (!empty($date)) {
+            $is_Date = preg_match('/^\d{4}\-\d{2}\-\d{2}( \d{2}:\d{2}:\d{2})?$/', $date);
+            if ($is_Date == 1) {
+                return "'{$date}'";
+            } else {
+                HTTP::JSON(400);
+            }
+        } else {
+            $is_Date = preg_match('/^\d{4}\-\d{2}\-\d{2}( \d{2}:\d{2}:\d{2})?$/', $default);
+            return ($is_Date == 1) ? "'{$default}'" : $default;
+        }
+    }
+
+    private function returnIfNumber($number, $default) {
+        if (!empty($number)) {
+            if (is_numeric($number)) {
+                return $number;
+            } else {
+                HTTP::JSON(400);
+            }
+        } else {
+            return $default;
+        }
+    }
+
+    function add() {
+        $filled = Partial::_filled($this->post, array(
+                    'nombre', 'marca', 'modelo', 'ano', 'placa', 'telefono', 'idvehiculo', 'codigo_activacion'
+        ));
+        if ($filled) {
+            $codigo = $this->getModel('codigos_disponibles')->select(array(
+                ':codigo' => ucwords($this->post['codigo_activacion'])
+            ));
+
+            if (count($codigo) == 1) {
+                $idcodigo_activacion = $codigo[0]['idcodigo_activacion'];
+                $vehiculo = $this->getModel('vehiculo');
+
+                $usuario = QueryFactory::query("
+                SELECT idusuario 
+                FROM usuario 
+                WHERE MD5(idusuario) = :token", array(
+                    ':token' => $_SESSION['token']
+                ));
+
+                $idvehiculo = -1;
+                if (count($usuario) == 1) {
+                    $idusuario = $usuario[0]['idusuario'];
+                    $params = Partial::prefix($this->post, ':');
+                    $params[':idcodigo_activacion'] = $idcodigo_activacion;
+
+                    $vehiculo->insert($params);
+
+                    $idvehiculo = $this->post['idvehiculo'];
+                }
+
+                if ($idvehiculo > 0 && !empty($idusuario)) {
+                    $this->getModel('vehiculousuario')->insert(array(
+                        ':idusuario' => $idusuario,
+                        ':idvehiculo' => $idvehiculo
+                    ));
+
+                    $this->getModel('vehicleconfiguration')->insert(array(
+                        ':idvehiculo' => $idvehiculo
+                    ));
+
+                    $this->getModel('vehiclestatus')->insert(array(
+                        ':idvehiculo' => $idvehiculo
+                    ));
+                    
+                    $response = Partial::createResponse(HTTP::Value(200), array (
+                        'idvehiculo' => $idvehiculo
+                    ));
+                    
+                    HTTP::JSON($response);
+                }
+                
+                HTTP::JSON(424);
+            }
+            
+            HTTP::JSON(424);
+        }
+        
+        HTTP::JSON(400);
+    }
+
+    function update() {
+        $empty = Partial::_empty($this->get, array('idvehiculo'));
+        $filled = Partial::_filled($this->get, array('id'));
+
+        if ($filled && $empty) {
+            $vehiculo = $this->getModel('vehiculo');
+            $params = Partial::prefix($this->get, ':');
+            $params[':idvehiculo'] = $this->get['id'];
+
+            $vehiculo->insertorupdate($params);
+
+            if ($vehiculo->lastID() > 0) {
+                HTTP::JSON(200);
+            }
+            
+            HTTP::JSON(304);
+        }
+        
+        HTTP::JSON(400);
+    }
+
+    function update_configuration() {
+        $empty = Partial::_empty($this->get, array('idvehiculo', 'idvehicleconfiguration'));
+        $filled = Partial::_filled($this->get, array('id'));
+
+        if ($filled && $empty) {
+            $params = Partial::prefix($this->get, ':');
+            $params[':idvehiculo'] = $this->get['id'];
+
+            $vehicleconfiguration = $this->getModel('vehicleconfiguration');
+
+            $vehicleconfiguration->insertorupdate($params);
+
+            if ($vehicleconfiguration->lastID() > 0) {
+                HTTP::JSON(200);
+            }
+            
+            HTTP::JSON(304);
+        }
+        
+        HTTP::JSON(400);
+    }
+
+    function configuration() {
+        $configs = $this->getModel('vehicleconfiguration')->select(array(
+            ':idvehiculo' => $this->get['id']
+        ));
+
+        $result = Partial::arrayNames($configs, array('idvehicleconfiguration'));
+        $response = Partial::createResponse(HTTP::Value(200), $result[0]);
+        
+        HTTP::JSON($response);
+    }
+
+    function delete() {
+        $this->getModel('vehiculo')->delete($this->get['id']);
+
+        HTTP::JSON(200);
+    }
+
+    function get() {
+        $strquery = '';
+        if (!empty($this->get['id'])) {
+            $ids = explode('|', $this->get['id']);
+            $tmp = array();
+
+            foreach ($ids as $id) {
+                if (is_numeric($id)) {
+                    array_push($tmp, "i.idvehiculo = $id");
+                }
+            }
+
+            $strquery = 'AND (' . implode(' OR ', $tmp) . ')';
+        }
+        
+        $strred = '';
+        if(!empty($this->get['idred'])) {
+                $strred = (is_numeric($this->get['idred']))? 
+                    "(vu.token = :token OR vu.token_owner = :token) AND vu.idred = {$this->get['idred']}" : 
+                    "vu.token_owner = :token";
+        } else {
+            $strred = 'vu.token_owner = :token';
+        }
+        
+        $result = QueryFactory::query("
+            SELECT vu.idred, i.*, tv.* 
+            FROM (
+                SELECT v.*, r.lat, r.lon, r.velocidad, r.bateria, r.gsm, r.azimuth, r.gstation, r.odometro, r.combustible,
+                IF(r.fecha IS NULL, 'unknow', IF(DATE_SUB(NOW(), INTERVAL 2 MINUTE) > r.fecha, 'offline', 'online')) AS estado, 
+                r.fecha AS conectado 
+                FROM vehiculo v LEFT JOIN (respuesta r) 
+                ON (r.idvehiculo = v.idvehiculo) 
+                ORDER BY r.idrespuesta DESC 
+            ) i, token_vehiculousuario vu, codigo_activacion ca, tipovehiculo tv 
+            WHERE ({$strred}) 
+            AND vu.idvehiculo = i.idvehiculo 
+            AND ca.idcodigo_activacion = i.idcodigo_activacion 
+            AND ca.idtipovehiculo = tv.idtipovehiculo 
+            {$strquery} 
+            GROUP BY i.idvehiculo;", array(
+                    ':token' => $_SESSION['token']
+        ));
+
+        $exclude = (isset($this->get['detallado'])) ?
+                array('idcodigo_activacion', 'creation', 'pass') :
+                array('idcodigo_activacion', 'creation', 'pass', 'bateria', 'gsm', 'azimuth', 'gstation', 'odometro', 'combustible');
+        $tmp = Partial::arrayNames($result, $exclude);
+        $response = Partial::createResponse(HTTP::Value(200), $tmp);
+
+        HTTP::JSON($response);
+    }
+
+    function notifications() {
+        $idrespuesta = $this->returnIfNumber($this->get['idrespuesta'], 0);
+        $limit = $this->returnIfNumber($this->get['limit'], 10);
+
+        $inicio = $this->returnIfDate($this->get['inicio'], '1990-09-22 10:35:00');
+        $fin = $this->returnIfDate($this->get['fin'], 'NOW()');
+
+        $ids = explode('|', $this->get['id']);
+        $tmp = array();
+
+        foreach ($ids as $id) {
+            if (is_numeric($id)) {
+                array_push($tmp, 'r.idvehiculo = ' . $id);
+            }
+        }
+
+        $strquery = (count($tmp) > 0)? '(' . implode(' OR ', $tmp) . ') AND ' : '';
+
+        $notifications = QueryFactory::query("
+            SELECT r.* 
+            FROM token_vehiculousuario vu, respuesta r 
+            WHERE {$strquery} (token = :token OR token_owner = :token)
+            AND vu.idvehiculo = r.idvehiculo 
+            AND r.respuesta = 'ALM'
+            AND r.idrespuesta > :idrespuesta
+            AND r.fecha BETWEEN {$inicio} AND {$fin}
+            GROUP BY r.idrespuesta
+            ORDER BY r.idrespuesta DESC 
+            LIMIT {$limit};", array(
+                    ':token' => $_SESSION['token'],
+                    ':idrespuesta' => $idrespuesta
+        ));
+
+        $exclude = (isset($this->get['detallado'])) ? array() : array('bateria', 'gsm', 'azimuth', 'gstation', 'odometro', 'combustible');
+
+        if (count($notifications) > 0) {
+            $result = Partial::arrayNames($notifications, $exclude);
+            $response = Partial::createResponse(HTTP::Value(200), $result);
+
+            HTTP::JSON($response);
+        }
+
+        HTTP::JSON(304);
+    }
+    
+    function response () {
+        if(!empty($this->get['idrespuesta'])) {
+            $notification = $this->getModel('respuesta')->select(array (
+                ':idrespuesta' => $this->get['idrespuesta']
+            ));
+
+            if(count($notification) == 1) {
+                $result = Partial::arrayNames($notification, array ('idvehiculo'));
+                $response = Partial::createResponse(HTTP::Value(200), $result[0]);
+                HTTP::JSON($response);
+            }
+            
+            HTTP::JSON(404);
+        }
+        
+        HTTP::JSON(400);
+    }
+
+    function status() {
+        $tmp = $this->getModel('vehiclestatus')->select(array(
+            ':idvehiculo' => $this->get['id']
+        ));
+
+        $result = Partial::arrayNames($tmp, array('idvehiclestatus'));
+        $response = Partial::createResponse(HTTP::Value(200), $result[0]);
+
+        HTTP::JSON($response);
+    }
+
+    function track() {
+        $filled = Partial::_filled($this->get, array('id'));
+
+        if ($filled) {
+            $idrespuesta = $this->returnIfNumber($this->get['idrespuesta'], 0);
+            $limit = $this->returnIfNumber($this->get['limit'], 10);
+
+            $inicio = $this->returnIfDate($this->get['inicio'], '1990-09-22 10:35:00');
+            $fin = $this->returnIfDate($this->get['fin'], 'NOW()');
+
+            $result = QueryFactory::query("
+                SELECT r.* 
+                FROM respuesta r, token_vehiculousuario vu 
+                WHERE (vu.token = :token OR vu.token_owner = :token)
+                AND vu.idvehiculo = :vehiculo 
+                AND vu.idvehiculo = r.idvehiculo
+                AND r.idrespuesta > :idrespuesta 
+                AND r.respuesta = 'CMD'
+                AND r.tipo = 'T'
+                AND r.fecha BETWEEN {$inicio} AND {$fin}
+                GROUP BY r.idrespuesta
+                ORDER BY r.idrespuesta DESC LIMIT {$limit};", array(
+                        ':token' => $_SESSION['token'],
+                        ':vehiculo' => $this->get['id'],
+                        ':idrespuesta' => $idrespuesta
+            ));
+
+            if (count($result) > 0) {
+                $tmp = Partial::arrayNames($result, array('respuesta', 'tipo'));
+                $response = Partial::createResponse(HTTP::Value(200), $tmp);
+                
+                HTTP::JSON($response);
+            }
+            
+            HTTP::JSON(304);
+        }
+        
+        HTTP::JSON(400);
+    }
+    
+    function position() {
+        $filled = Partial::_filled($this->get, array('id'));
+
+        if ($filled) {
+            $result = QueryFactory::query("
+                SELECT r.* 
+                FROM respuesta r, token_vehiculousuario vu 
+                WHERE (vu.token = :token OR vu.token_owner = :token)
+                AND vu.idvehiculo = :vehiculo 
+                AND vu.idvehiculo = r.idvehiculo 
+                AND r.respuesta = 'CMD'
+                AND r.tipo = 'F'
+                GROUP BY r.idrespuesta
+                ORDER BY r.idrespuesta DESC", array(
+                        ':token' => $_SESSION['token'],
+                        ':vehiculo' => $this->get['id']
+            ));
+
+            if (count($result) > 0) {
+                $tmp = Partial::arrayNames($result, array('respuesta', 'tipo'));
+                $response = Partial::createResponse(HTTP::Value(200), $tmp);
+                
+                HTTP::JSON($response);
+            }
+            
+            HTTP::JSON(304);
+        }
+        
+        HTTP::JSON(400);
+    }
+
+    function add_user() {
+        $filled = Partial::_filled($this->get, array('id', 'idusuario'));
+        if ($filled) {
+            $owner = QueryFactory::query("
+                SELECT idusuario 
+                FROM vehiculousuario 
+                WHERE MD5(idusuario) = :token 
+                AND idvehiculo = :vehiculo 
+                AND owner = 0", array(
+                        ':token' => $_SESSION['token'],
+                        ':vehiculo' => $this->get['id']
+            ));
+
+            if (count($owner) == 1) {
+                $this->getModel('vehiculousuario')->insert(array(
+                    ':idvehiculo' => $this->get['id'],
+                    ':idusuario' => $this->get['idusuario'],
+                    ':owner' => $owner[0]['idusuario']
+                ));
+
+                HTTP::JSON(200);
+            }
+            
+            HTTP::JSON(403);
+        }
+        
+        HTTP::JSON(400);
+    }
+    
+    function messages() {
+        $limit = 20;
+        if(!empty($this->get['limit'])) {
+            $limit = (is_numeric($this->get['limit']))? $this->get['limit'] : 20;
+        }
+        
+        $tmp = QueryFactory::query("
+            SELECT m.*, u.nombre
+            FROM mensaje m, usuario u
+            WHERE m.idvehiculo = :vehiculo
+            AND m.idusuario = u.idusuario
+            ORDER BY idmensaje DESC
+            LIMIT {$limit};", array (
+                ':vehiculo' => $this->get['id']
+            ));
+
+        $result = Partial::arrayNames($tmp);
+        $response = Partial::createResponse(HTTP::Value(200), $result);
+        
+        HTTP::JSON($response);
+    }
+    
+    function send() {
+        $filled = Partial::_filled($this->post, array ('id', 'mensaje'));
+        if($filled) {
+            $user = QueryFactory::query("
+                SELECT * FROM token_vehiculousuario
+                WHERE idvehiculo = :idvehiculo
+                AND (token = :token OR token_owner = :token)
+                GROUP BY idvehiculo;", array (
+                    ':token' => $_SESSION['token'],
+                    ':idvehiculo' => $this->post['id']
+            ));
+            
+            if(count($user) == 1) {
+                $mensaje = $this->getModel('mensaje');
+                        
+                $mensaje->insert(array (
+                    ':idusuario' => $user[0]['idusuario'],
+                    ':idvehiculo' => $this->post['id'],
+                    ':mensaje' => $this->post['mensaje']
+                ));
+                
+                if($mensaje->lastID() > 0) {
+                    HTTP::JSON(200);
+                }
+                
+                HTTP::JSON(424);
+            }
+            
+            HTTP::JSON(403);
+        }
+        
+        HTTP::JSON(400);
+    }
+    
+    function obd2 () {
+        $tmp = $this->getModel('obd2')->select(array(
+            ':idvehiculo' => $this->get['id']
+        ));
+
+        $result = Partial::arrayNames($tmp, array('idobd2'));
+        $response = Partial::createResponse(HTTP::Value(200), $result[0]);
+
+        HTTP::JSON($response);
+    }
+
+}
+
+?>
